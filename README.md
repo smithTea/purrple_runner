@@ -1,6 +1,6 @@
 # Purrple IPA builder
 
-This repository contains only the GitHub Actions builder. App and server source live at `ssh://git@git.elysium.cybercpu.org/smith/Purrple.git`.
+This repository contains only the GitHub Actions builder. App and server source live at
 
 Run **Actions → Build Purrple IPA → Run workflow**. Choose a source branch, tag, or commit (default: `master`). Download the unsigned IPA artifact and install with SideStore.
 
