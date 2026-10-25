@@ -1,12 +1,9 @@
-# Purrple
+# Purrple IPA builder
 
-A purple, offline music player for iOS. It plays your own MP3, FLAC, OGG (Vorbis/Opus), M4A, WAV and other files.
+This repository contains only the GitHub Actions builder. App and server source live at `ssh://git@git.elysium.cybercpu.org/smith/Purrple.git`.
 
-- **Add music:** tap **+** to import files or folders, or copy them into *Files › On My iPhone › Purrple*. The library rescans every time the app opens.
-- **Playback:** [SFBAudioEngine](https://github.com/sbooth/SFBAudioEngine), with background audio, lock-screen and Control Center controls, and AirPlay.
-- **UI:** SwiftUI with a dark theme. Spacing and sizes follow a familiar streaming-app layout, with a purple accent.
+Run **Actions → Build Purrple IPA → Run workflow**. Choose a source branch, tag, or commit (default: `master`). Download the unsigned IPA artifact and install with SideStore.
 
-## Build
-Every push to `main` builds an unsigned `.ipa` on GitHub's macOS runners (`.github/workflows/build.yml`). Download it from the run's artifacts and install it with SideStore.
+The runner fetches source using the repository secrets `SOURCE_SSH_KEY` (a dedicated read-only Forgejo deploy key) and `SOURCE_KNOWN_HOSTS` (pinned SSH host key). Source exists temporarily on the GitHub runner but is not committed here. IPA artifacts expire after 14 days.
 
-The Xcode project is generated from `project.yml` with [XcodeGen](https://github.com/yonaskolb/XcodeGen). On a Mac: `brew install xcodegen && xcodegen generate && open Purrple.xcodeproj`.
+The repository previously contained app source; those older commits remain in history.
