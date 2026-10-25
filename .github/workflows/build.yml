@@ -1,0 +1,174 @@
+# Builds Purrple into an unsigned .ipa that SideStore can sign and install.
+# No Mac needed: everything runs on GitHub's macOS runners.
+#
+# Runs on every push to main, or manually: Actions -> "Build Purrple IPA" ->
+# "Run workflow". The .ipa is attached to the run as an artifact.
+
+name: Build Purrple IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "GitHub macOS runner"
+        required: true
+        default: "macos-latest"
+        type: string
+      xcode:
+        description: "Xcode version to use, e.g. 26.0, or 'latest' for the newest non-beta Xcode on the runner"
+        required: true
+        default: "latest"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Push builds have no inputs, hence the fallbacks.
+    runs-on: ${{ inputs.runner || 'macos-latest' }}
+    timeout-minutes: 60
+
+    env:
+      XCODE_WANTED: ${{ inputs.xcode || 'latest' }}
+      BUILD_NUMBER: ${{ github.run_number }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode
+        run: |
+          echo "Installed Xcode versions:"
+          ls -d /Applications/Xcode*.app || true
+          echo "Current default: $(xcode-select -p)"
+
+          if [ "$XCODE_WANTED" = "latest" ]; then
+            # Pick the highest non-beta Xcode_X.Y[.Z].app (python avoids
+            # relying on 'sort -V', which macOS's sort may not support).
+            XC=$(python3 - <<'PY'
+          import glob
+          best = None
+          for p in glob.glob("/Applications/Xcode_*.app"):
+              name = p[len("/Applications/Xcode_"):-len(".app")]
+              try:
+                  v = tuple(int(x) for x in name.split("."))
+              except ValueError:
+                  continue  # skips betas / release candidates like 26.1_beta
+              if best is None or v > best[0]:
+                  best = (v, p)
+          print(best[1] if best else "")
+          PY
+            )
+            if [ -z "$XC" ]; then
+              echo "::warning::No Xcode_X.Y.app found; keeping the runner's default Xcode."
+            fi
+          else
+            XC="/Applications/Xcode_${XCODE_WANTED}.app"
+            if [ ! -d "$XC" ]; then
+              echo "::error::Xcode $XCODE_WANTED is not installed on this runner (see list above)."
+              exit 1
+            fi
+          fi
+
+          if [ -n "$XC" ]; then
+            echo "Selecting $XC"
+            sudo xcode-select -s "$XC/Contents/Developer"
+          fi
+          xcodebuild -version
+
+      - name: Generate Xcode project
+        run: |
+          command -v xcodegen >/dev/null || brew install xcodegen
+          xcodegen --version
+          xcodegen generate
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project Purrple.xcodeproj \
+            -scheme Purrple \
+            -clonedSourcePackagesDirPath SourcePackages
+
+      - name: Build (unsigned)
+        run: |
+          status=0
+          xcodebuild build \
+            -project Purrple.xcodeproj \
+            -scheme Purrple \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            -clonedSourcePackagesDirPath SourcePackages \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            > build.log 2>&1 || status=$?
+          grep -E "error:|\*\* BUILD" build.log || true
+          if [ "$status" -ne 0 ] || [ ! -d build/Build/Products/Release-iphoneos/Purrple.app ]; then
+            echo "::error::Build failed (exit $status). Last lines of the log:"
+            tail -80 build.log
+            exit 1
+          fi
+
+      - name: Ad-hoc sign
+        # SideStore re-signs with your Apple ID; this just gives every nested
+        # binary a valid signature to replace. Deepest code first.
+        run: |
+          APP=build/Build/Products/Release-iphoneos/Purrple.app
+          find "$APP" -depth \( -name "*.framework" -o -name "*.dylib" -o -name "*.appex" \) -print0 |
+            while IFS= read -r -d '' f; do codesign -f -s - "$f"; done
+          codesign -f -s - "$APP"
+          codesign -dv "$APP"
+          echo "Embedded frameworks:"; ls "$APP/Frameworks" 2>/dev/null || echo "(none)"
+
+      - name: Package .ipa
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/Purrple.app Payload/
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" Payload/Purrple.app/Info.plist)
+          BUILDNO=$(/usr/libexec/PlistBuddy -c "Print CFBundleVersion" Payload/Purrple.app/Info.plist)
+          IPA="Purrple-${VERSION}-${BUILDNO}-unsigned.ipa"
+          zip -qry "$IPA" Payload
+          echo "IPA=$IPA" >> "$GITHUB_ENV"
+
+          SHA=$(shasum -a 256 "$IPA" | cut -d' ' -f1)
+          {
+            echo "## Purrple build"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`$GITHUB_SHA\` |"
+            echo "| Version | $VERSION (build $BUILDNO) |"
+            echo "| Xcode | $(xcodebuild -version | head -1) |"
+            echo "| File | \`$IPA\` ($(du -h "$IPA" | cut -f1)) |"
+            echo "| SHA-256 | \`$SHA\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload .ipa
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ env.IPA }}
+          path: ${{ env.IPA }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
