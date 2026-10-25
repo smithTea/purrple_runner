@@ -129,6 +129,28 @@ jobs:
             -scheme Purrple \
             -clonedSourcePackagesDirPath SourcePackages
 
+      - name: Test library persistence and album matching
+        run: |
+          set -euo pipefail
+          SIMULATOR=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(v["udid"] for k in sorted(d,reverse=True) if ".iOS-" in k for v in d[k] if v.get("isAvailable") and v["name"].startswith("iPhone")))')
+          status=0
+          xcodebuild test \
+            -project Purrple.xcodeproj \
+            -scheme Purrple \
+            -destination "platform=iOS Simulator,id=$SIMULATOR" \
+            -derivedDataPath test-build \
+            -clonedSourcePackagesDirPath SourcePackages \
+            -parallel-testing-enabled NO \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            > test.log 2>&1 || status=$?
+          grep -E 'error:|Test Case|Executed|\*\* TEST' test.log || true
+          if [ "$status" -ne 0 ]; then
+            tail -100 test.log
+            exit "$status"
+          fi
+
       - name: Build (unsigned)
         run: |
           status=0
@@ -201,5 +223,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build-log
-          path: source/purrple_runner/build.log
+          path: |
+            source/purrple_runner/build.log
+            source/purrple_runner/test.log
           if-no-files-found: ignore
